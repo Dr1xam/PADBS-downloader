@@ -20,7 +20,7 @@ if ! command -v aria2c &> /dev/null; then
     apt-get update -qq && apt-get install -y -qq aria2
 fi
 
-aria2c -d "$DOWNLOAD_DIR" -x 16 -o "$PROGRAM_ARCHIVE_NAME" https://github.com/Dr1xam/PADBS/archive/refs/tags/v1.0.0-legacy.tar.gz
+aria2c -d "$DOWNLOAD_DIR" -x 16 -o "$PROGRAM_ARCHIVE_NAME" https://github.com/Dr1xam/PADBS-installer/archive/refs/tags/v0.1.0.tar.gz
 
 cd "$DOWNLOAD_DIR"
 
