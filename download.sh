@@ -1,6 +1,7 @@
 #!/bin/bash
 #дерикторія в яку завантажиться інсталятор
-DOWNLOAD_DIR="/var/lib/vz/snippets"
+#DOWNLOAD_DIR="/var/lib/vz/snippets"
+DOWNLOAD_DIR="./test"
 #Дерикторія прграми порсингу силок
 VERSION_DEFINDER_DIR="./src/python/version_definder"
 #Назва архіву з кодом програми
@@ -9,6 +10,8 @@ PROGRAM_ARCHIVE_NAME="PADBS.tar.gz"
 TAR_GZ_DIR="./resources/software/tar-gz"
 #Розташування розархівованих інсталяторів програм
 SOFTWARE_DIR="./resources/software"
+#Розташування програми пошуку посилань
+VERSION_DEFINDER_DIR="./src/python/version-definder"
 
 # Перевірка whiptail
 if ! command -v whiptail &> /dev/null; then
@@ -53,6 +56,209 @@ python3 -c "import json, urllib.request, os; path='$SOFTWARE_DIR/pip/'; os.maked
 mkdir -p "$SOFTWARE_DIR/ansible"
 #Завантажуємо інсталяційні файли енсібла
 pip download ansible --dest $SOFTWARE_DIR/ansible/
+# Завантаження в багато потоків
+# Створення тимчасових файлів
+TMP_UBUNTU=$(mktemp)
+TMP_ROCKET=$(mktemp)
+TMP_ZABBIX=$(mktemp)
+TMP_DEBIAN=$(mktemp)
+TMP_PEX_MGR=$(mktemp)
+TMP_PEX_CONF=$(mktemp)
+
+# Запускаємо Python-парсери у фоні
+{
+    python3 "$VERSION_DEFINDER_DIR/get-urls.py" ubuntu > "$TMP_UBUNTU" &
+    python3 "$VERSION_DEFINDER_DIR/get-urls.py" rocketchat > "$TMP_ROCKET" &
+    python3 "$VERSION_DEFINDER_DIR/get-urls.py" zabbix > "$TMP_ZABBIX" &
+    python3 "$VERSION_DEFINDER_DIR/get-urls.py" debian > "$TMP_DEBIAN" &
+    python3 "$VERSION_DEFINDER_DIR/get-urls.py" pexip_manage > "$TMP_PEX_MGR" &
+    python3 "$VERSION_DEFINDER_DIR/get-urls.py" pexip_conf > "$TMP_PEX_CONF" &
+    wait
+} | whiptail --gauge "Отримання списків версій для всіх програм..." 6 60 0
+
+# Оголошення асоціативних масивів для лінків
+declare -A MAP_UBUNTU
+declare -A MAP_ROCKET
+declare -A MAP_ZABBIX
+declare -A MAP_DEBIAN
+declare -A MAP_PEX_MGR
+declare -A MAP_PEX_CONF
+# Оголошення масивів для меню
+MENU_UBUNTU=()
+MENU_ROCKET=()
+MENU_ZABBIX=()
+MENU_DEBIAN=()
+MENU_PEX_MGR=()
+MENU_PEX_CONF=()
+# Функція читання файлу у змінні
+load_data() {
+    local file="$1"
+    declare -n menu_ref="$2"
+    declare -n map_ref="$3"
+
+    # Якщо файл порожній або помилка парсингу
+    if [ ! -s "$file" ]; then
+        return
+    fi
+
+    while read -r VER LINK; do
+        if [[ -n "$VER" ]]; then
+            menu_ref+=("$VER" "" "OFF")
+            map_ref["$VER"]="$LINK"
+        fi
+    done < "$file"
+}
+
+load_data "$TMP_UBUNTU"   MENU_UBUNTU   MAP_UBUNTU
+load_data "$TMP_ROCKET"   MENU_ROCKET   MAP_ROCKET
+load_data "$TMP_ZABBIX"   MENU_ZABBIX   MAP_ZABBIX
+load_data "$TMP_DEBIAN"   MENU_DEBIAN   MAP_DEBIAN
+load_data "$TMP_PEX_MGR"  MENU_PEX_MGR  MAP_PEX_MGR
+load_data "$TMP_PEX_CONF" MENU_PEX_CONF MAP_PEX_CONF
+# Видаляємо тимчасові файли
+rm "$TMP_UBUNTU" "$TMP_ROCKET" "$TMP_ZABBIX" "$TMP_DEBIAN" "$TMP_PEX_MGR" "$TMP_PEX_CONF"
+#Вибір програм(Меню (головне))
+while true; do
+    RAW_APPS=$(whiptail --title "Менеджер завантажень" --checklist \
+    "Які продукти ви хочете налаштувати/завантажити?" 20 70 6 \
+    "RocketChat"  "Rocket.Chat Server (+ Ubuntu Base)" OFF \
+    "Zabbix"      "Zabbix Appliance (.ovf)" OFF \
+    "Debian"      "Debian Cloud Image (.qcow2)" OFF \
+    "Pexip_Mgr"   "Pexip Management Node (.ova)" OFF \
+    "Pexip_Conf"  "Pexip Conferencing Node (.ova)" OFF \
+    3>&1 1>&2 2>&3)
+
+    if [ $? -ne 0 ]; then
+        echo "Роботу завершено користувачем."
+        exit 0
+    fi
+
+    if [ -n "$RAW_APPS" ]; then
+        break
+    else
+        whiptail --title "Увага" --msgbox "Ви нічого не вибрали!\nБудь ласка, оберіть хоча б один пункт." 8 45
+    fi
+done
+
+SELECTED_APPS_STR=$(echo $RAW_APPS | tr -d '"')
+#Вибір версій (меню)
+# Універсальна функція вибору
+safe_select() {
+    local title="$1"
+    local text="$2"
+    declare -n menu_opts="$3"
+    local result_var="$4"
+    local selection=""
+
+    # Перевірка, чи є взагалі версії для вибору
+    if [ ${#menu_opts[@]} -eq 0 ]; then
+        whiptail --title "Помилка" --msgbox "Не знайдено доступних версій для $title.\nПеревірте інтернет або логи парсера." 10 50
+        eval "$result_var=\"ERROR\""
+        return
+    fi
+
+    while true; do
+        selection=$(whiptail --title "$title" --radiolist \
+        "$text" 22 70 12 \
+        "${menu_opts[@]}" 3>&1 1>&2 2>&3)
+
+        if [ $? -ne 0 ]; then
+            echo "Вихід під час вибору версії."
+            exit 0
+        fi
+
+        if [ -n "$selection" ]; then
+            break
+        else
+            whiptail --msgbox "Необхідно вибрати версію зі списку!" 8 40
+        fi
+    done
+
+    eval "$result_var=\"$selection\""
+}
+
+# --- ROCKET CHAT (залежить від Ubuntu) ---
+if [[ "$SELECTED_APPS_STR" == *"RocketChat"* ]]; then
+    safe_select "Rocket.Chat -> OS Base" "Оберіть версію Ubuntu LTS:" MENU_UBUNTU VER_UBUNTU
+    safe_select "Rocket.Chat -> Application" "Оберіть версію Rocket.Chat:" MENU_ROCKET VER_ROCKET
+fi
+
+# --- ZABBIX ---
+if [[ "$SELECTED_APPS_STR" == *"Zabbix"* ]]; then
+    safe_select "Zabbix Appliance" "Оберіть версію Zabbix:" MENU_ZABBIX VER_ZABBIX
+fi
+
+# --- DEBIAN ---
+if [[ "$SELECTED_APPS_STR" == *"Debian"* ]]; then
+    safe_select "Debian Cloud" "Оберіть версію Debian (Backports):" MENU_DEBIAN VER_DEBIAN
+fi
+
+# --- PEXIP MANAGEMENT ---
+if [[ "$SELECTED_APPS_STR" == *"Pexip_Mgr"* ]]; then
+    safe_select "Pexip Manager" "Оберіть версію Management Node:" MENU_PEX_MGR VER_PEX_MGR
+fi
+
+# --- PEXIP CONFERENCING ---
+if [[ "$SELECTED_APPS_STR" == *"Pexip_Conf"* ]]; then
+    safe_select "Pexip ConfNode" "Оберіть версію Conferencing Node:" MENU_PEX_CONF VER_PEX_CONF
+fi
+#ПІДСУМКОВИЙ ЗВІТ
+# --- RocketChat ---
+if [[ "$SELECTED_APPS_STR" == *"RocketChat"* ]]; then
+    echo -e "\n [ROCKET.CHAT FULL STACK]"
+    if [[ "$VER_UBUNTU" != "ERROR" && "$VER_ROCKET" != "ERROR" ]]; then
+        echo "   -> OS Base:  Ubuntu $VER_UBUNTU"
+        echo "      Link:     ${MAP_UBUNTU[$VER_UBUNTU]}"
+        echo "   -> App:      Rocket.Chat $VER_ROCKET"
+        echo "      Channel:  ${MAP_ROCKET[$VER_ROCKET]}" # У вашому парсері лінк - це назва каналу, або змініть логіку
+    else
+        echo "   -> [SKIPPED] Помилка отримання списків."
+    fi
+fi
+
+# --- Zabbix ---
+if [[ "$SELECTED_APPS_STR" == *"Zabbix"* ]]; then
+    echo -e "\n [ZABBIX APPLIANCE]"
+    if [[ "$VER_ZABBIX" != "ERROR" ]]; then
+        echo "   -> Version:  $VER_ZABBIX"
+        echo "      Link:     ${MAP_ZABBIX[$VER_ZABBIX]}"
+    else
+        echo "   -> [SKIPPED] Немає даних."
+    fi
+fi
+
+# --- Debian ---
+if [[ "$SELECTED_APPS_STR" == *"Debian"* ]]; then
+    echo -e "\n [DEBIAN CLOUD IMAGE]"
+    if [[ "$VER_DEBIAN" != "ERROR" ]]; then
+        echo "   -> Version:  Debian $VER_DEBIAN"
+        echo "      Link:     ${MAP_DEBIAN[$VER_DEBIAN]}"
+    else
+        echo "   -> [SKIPPED] Немає даних."
+    fi
+fi
+
+# --- Pexip Manager ---
+if [[ "$SELECTED_APPS_STR" == *"Pexip_Mgr"* ]]; then
+    echo -e "\n [PEXIP MANAGEMENT NODE]"
+    if [[ "$VER_PEX_MGR" != "ERROR" ]]; then
+        echo "   -> Version:  $VER_PEX_MGR"
+        echo "      Link:     ${MAP_PEX_MGR[$VER_PEX_MGR]}"
+    else
+        echo "   -> [SKIPPED] Немає даних."
+    fi
+fi
+
+# --- Pexip Conf ---
+if [[ "$SELECTED_APPS_STR" == *"Pexip_Conf"* ]]; then
+    echo -e "\n [PEXIP CONFERENCING NODE]"
+    if [[ "$VER_PEX_CONF" != "ERROR" ]]; then
+        echo "   -> Version:  $VER_PEX_CONF"
+        echo "      Link:     ${MAP_PEX_CONF[$VER_PEX_CONF]}"
+    else
+        echo "   -> [SKIPPED] Немає даних."
+    fi
+fi
 #Дозволяємо запуск інсталятора
 chmod +x ./bin/deploy.sh
 #Птитаємо чи запускати встановлення
