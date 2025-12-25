@@ -120,12 +120,12 @@ rm "$TMP_UBUNTU" "$TMP_ROCKET" "$TMP_ZABBIX" "$TMP_DEBIAN" "$TMP_PEX_MGR" "$TMP_
 #Вибір програм(Меню (головне))
 while true; do
     RAW_APPS=$(whiptail --title "Менеджер завантажень" --checklist \
-    "Які продукти ви хочете налаштувати/завантажити?" 20 70 6 \
-    "RocketChat"  "Rocket.Chat Server (+ Ubuntu Base)" OFF \
-    "Zabbix"      "Zabbix Appliance (.ovf)" OFF \
-    "Debian"      "Debian Cloud Image (.qcow2)" OFF \
-    "Pexip_Mgr"   "Pexip Management Node (.ova)" OFF \
-    "Pexip_Conf"  "Pexip Conferencing Node (.ova)" OFF \
+    "Які продукти ви хочете завантажити?" 20 56 5 \
+    "RocketChat"  "Rocket.Chat Server (+ Ubuntu Base)" ON \
+    "Zabbix"      "Zabbix Appliance (.ovf)" ON \
+    "Debian"      "Debian Cloud Image (.qcow2)" ON \
+    "Pexip_Mgr"   "Pexip Management Node (.ova)" ON \
+    "Pexip_Conf"  "Pexip Conferencing Node (.ova)" ON \
     3>&1 1>&2 2>&3)
 
     if [ $? -ne 0 ]; then
@@ -136,7 +136,7 @@ while true; do
     if [ -n "$RAW_APPS" ]; then
         break
     else
-        whiptail --title "Увага" --msgbox "Ви нічого не вибрали!\nБудь ласка, оберіть хоча б один пункт." 8 45
+        whiptail --title "Увага" --msgbox "Ви нічого не вибрали!\nБудь ласка, оберіть хоча б один пункт." 8 56
     fi
 done
 
@@ -152,14 +152,14 @@ safe_select() {
 
     # Перевірка, чи є взагалі версії для вибору
     if [ ${#menu_opts[@]} -eq 0 ]; then
-        whiptail --title "Помилка" --msgbox "Не знайдено доступних версій для $title.\nПеревірте інтернет або логи парсера." 10 50
+        whiptail --title "Помилка" --msgbox "Не знайдено доступних версій для $title.\nПеревірте інтернет або логи парсера." 10 56
         eval "$result_var=\"ERROR\""
         return
     fi
 
     while true; do
         selection=$(whiptail --title "$title" --radiolist \
-        "$text" 22 70 12 \
+        "$text" 20 56 13 \
         "${menu_opts[@]}" 3>&1 1>&2 2>&3)
 
         if [ $? -ne 0 ]; then
@@ -179,8 +179,20 @@ safe_select() {
 
 # --- ROCKET CHAT (залежить від Ubuntu) ---
 if [[ "$SELECTED_APPS_STR" == *"RocketChat"* ]]; then
-    safe_select "Rocket.Chat -> OS Base" "Оберіть версію Ubuntu LTS:" MENU_UBUNTU VER_UBUNTU
-    safe_select "Rocket.Chat -> Application" "Оберіть версію Rocket.Chat:" MENU_ROCKET VER_ROCKET
+    # Автоматичний вибір останньої (першої в списку) версії Ubuntu
+    if [ ${#MENU_UBUNTU[@]} -gt 0 ]; then
+        # У MENU_UBUNTU структура: [VER, "", "OFF", VER, "", "OFF"...]
+        # Тому перший елемент (індекс 0) - це найновіша версія (за умови сортування парсером)
+        VER_UBUNTU="${MENU_UBUNTU[0]}"
+        echo "Автоматично обрано Ubuntu Base: $VER_UBUNTU"
+    else
+        VER_UBUNTU="ERROR"
+        whiptail --msgbox "Не вдалося автоматично визначити версію Ubuntu!" 8 52
+        #Придумай що робити з помилкою !!!!!!!!!!!!!!!!!!!!!!!1
+    fi
+
+    # Для самого RocketChat залишаємо ручний вибір
+    safe_select "RocketChat -> Application" "Оберіть версію RocketChat:" MENU_ROCKET VER_ROCKET
 fi
 
 # --- ZABBIX ---
@@ -193,14 +205,40 @@ if [[ "$SELECTED_APPS_STR" == *"Debian"* ]]; then
     safe_select "Debian Cloud" "Оберіть версію Debian (Backports):" MENU_DEBIAN VER_DEBIAN
 fi
 
-# --- PEXIP MANAGEMENT ---
-if [[ "$SELECTED_APPS_STR" == *"Pexip_Mgr"* ]]; then
-    safe_select "Pexip Manager" "Оберіть версію Management Node:" MENU_PEX_MGR VER_PEX_MGR
-fi
+# --- PEXIP ---
+LATEST_COMMON_VER=""
 
-# --- PEXIP CONFERENCING ---
-if [[ "$SELECTED_APPS_STR" == *"Pexip_Conf"* ]]; then
-    safe_select "Pexip ConfNode" "Оберіть версію Conferencing Node:" MENU_PEX_CONF VER_PEX_CONF
+if [[ "$SELECTED_APPS_STR" == *"Pexip_Mgr"* ]] || [[ "$SELECTED_APPS_STR" == *"Pexip_Conf"* ]]; then
+
+    # 1. Перевіряємо, чи масиви не порожні
+    if [ ${#MENU_PEX_MGR[@]} -eq 0 ] || [ ${#MENU_PEX_CONF[@]} -eq 0 ]; then
+        echo "Помилка: Не вдалося отримати списки версій для порівняння."
+        exit 1
+    fi
+
+    # 2. Алгоритм пошуку спільної версії
+    # Проходимо по версіях Manager (від найновішої)
+    for ver_mgr in "${MENU_PEX_MGR[@]}"; do
+        # Для кожної версії Manager перевіряємо, чи є вона в списку ConfNode
+        for ver_conf in "${MENU_PEX_CONF[@]}"; do
+            if [[ "$ver_mgr" == "$ver_conf" ]]; then
+                LATEST_COMMON_VER="$ver_mgr"
+                break 2 # Знайшли спільну! Виходимо з обох циклів
+            fi
+        done
+    done
+
+    # 3. Перевірка результату
+    if [[ -z "$LATEST_COMMON_VER" ]]; then
+        echo "Критична помилка: Не знайдено жодної спільної версії між Pexip Manager та ConfNode!"
+        exit 1
+    else
+        echo "Визначена сумісна версія: $LATEST_COMMON_VER"
+
+        # Присвоюємо знайдену версію обом змінним
+        VER_PEX_MGR="$LATEST_COMMON_VER"
+        VER_PEX_CONF="$LATEST_COMMON_VER"
+    fi
 fi
 #ПІДСУМКОВИЙ ЗВІТ
 # --- RocketChat ---
@@ -264,7 +302,7 @@ chmod +x ./bin/deploy.sh
 #Птитаємо чи запускати встановлення
 if whiptail --title "Встановлення" \
    --yes-button "Так" --no-button "Ні" \
-   --yesno "Розпочати встановлення ?" 10 60; then
+   --yesno "Розпочати встановлення ?" 10 56; then
 
     echo "Користувач обрав 'Так'. Починаємо встановлення..."
     #Запуск встановлення
