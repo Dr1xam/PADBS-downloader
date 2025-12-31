@@ -30,7 +30,7 @@ if ! command -v aria2c &> /dev/null; then
     apt-get update -qq && apt-get install -y -qq aria2
 fi
 #Завантаження архіву з коом програми
-aria2c -d "$DOWNLOAD_DIR" -x 16 -o "$PROGRAM_ARCHIVE_NAME" https://github.com/Dr1xam/PADBS-installer/archive/refs/tags/v0.1.2.2.tar.gz
+aria2c -d "$DOWNLOAD_DIR" -x 16 -o "$PROGRAM_ARCHIVE_NAME" https://github.com/Dr1xam/PADBS-installer/archive/refs/tags/v0.1.3.tar.gz
 #Переходимо в директорію з програмою
 cd "$DOWNLOAD_DIR"
 
@@ -53,6 +53,8 @@ mkdir "$SOFTWARE_DIR"
 mkdir "$TAR_GZ_DIR"
 #Створюєм директрію з інсталяційними файлами піпу
 mkdir "$SOFTWARE_DIR/pip"
+#Переходимо у віртуальне середовище
+source ./src/python/version-definder/venv/bin/activate
 #Завантажуємо скрипт для встановлення піпу онлайн
 python3 -c "import urllib.request; urllib.request.urlretrieve('https://bootstrap.pypa.io/get-pip.py', '$SOFTWARE_DIR/pip/get-pip.py')"
 #Завантажуємо інсталяційні файли і залежності піпу
@@ -395,6 +397,8 @@ EOF
 fi
 
 rm ./temp/downloads.txt
+
+deactivate
 #Дозволяємо запуск інсталятора
 chmod +x ./bin/deploy.sh
 #Птитаємо чи запускати встановлення
