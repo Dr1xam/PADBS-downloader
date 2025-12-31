@@ -9,13 +9,15 @@ PROGRAM_ARCHIVE_NAME="PADBS.tar.gz"
 #Розташування архівованих інсталяторів програм
 TAR_GZ_DIR="./resources/software/tar-gz"
 #Розташування хмарних образів
-CLOUD_IMAGES_DIR="./resources/software/cloud-images"
+CLOUD_IMAGES_DIR="./resources/cloud-images"
 #Розташування ісо
-ISO_DIR="./resources/software/iso"
+ISO_DIR="./resources/iso"
 #Розташування розархівованих інсталяторів програм
 SOFTWARE_DIR="./resources/software"
 #Розташування програми пошуку посилань
 VERSION_DEFINDER_DIR="./src/python/version-definder"
+#Розташування каталогу із тимчасовими файлами
+TEMP_DIR="./temp"
 
 # Перевірка whiptail
 if ! command -v whiptail &> /dev/null; then
@@ -28,7 +30,7 @@ if ! command -v aria2c &> /dev/null; then
     apt-get update -qq && apt-get install -y -qq aria2
 fi
 #Завантаження архіву з коом програми
-aria2c -d "$DOWNLOAD_DIR" -x 16 -o "$PROGRAM_ARCHIVE_NAME" https://github.com/Dr1xam/PADBS-installer/archive/refs/tags/v0.1.1.tar.gz
+aria2c -d "$DOWNLOAD_DIR" -x 16 -o "$PROGRAM_ARCHIVE_NAME" https://github.com/Dr1xam/PADBS-installer/archive/refs/tags/v0.1.2.2.tar.gz
 #Переходимо в директорію з програмою
 cd "$DOWNLOAD_DIR"
 
@@ -43,9 +45,10 @@ rm "$PROGRAM_ARCHIVE_NAME"
 # 3. Перевіряємо, чи це справді папка, і заходимо в програму
     cd "$DIR_NAME"
 #створення директорій в програмі
+mkdir "$TEMP_DIR"
 mkdir "./resources"
-mkdir "./resources/cloud-images"
-mkdir "./resources/iso"
+mkdir "$CLOUD_IMAGES_DIR"
+mkdir "$ISO_DIR"
 mkdir "$SOFTWARE_DIR"
 mkdir "$TAR_GZ_DIR"
 #Створюєм директрію з інсталяційними файлами піпу
@@ -68,6 +71,8 @@ TMP_ZABBIX=$(mktemp)
 TMP_DEBIAN=$(mktemp)
 TMP_PEX_MGR=$(mktemp)
 TMP_PEX_CONF=$(mktemp)
+TMP_SNAPD=$(mktemp)
+TMP_CORES=$(mktemp)
 
 # Запускаємо Python-парсери у фоні
 {
@@ -77,6 +82,8 @@ TMP_PEX_CONF=$(mktemp)
     python3 "$VERSION_DEFINDER_DIR/get-urls.py" debian > "$TMP_DEBIAN" &
     python3 "$VERSION_DEFINDER_DIR/get-urls.py" pexip_manage > "$TMP_PEX_MGR" &
     python3 "$VERSION_DEFINDER_DIR/get-urls.py" pexip_conf > "$TMP_PEX_CONF" &
+    python3 "$VERSION_DEFINDER_DIR/get-urls.py" snapd > "$TMP_SNAPD" &
+    python3 "$VERSION_DEFINDER_DIR/get-urls.py" cores > "$TMP_CORES" &
     wait
 } | whiptail --gauge "Отримання списків версій для всіх програм..." 6 60 0
 
@@ -87,6 +94,8 @@ declare -A MAP_ZABBIX
 declare -A MAP_DEBIAN
 declare -A MAP_PEX_MGR
 declare -A MAP_PEX_CONF
+declare -A MAP_SNAPD
+declare -A MAP_CORES
 # Оголошення масивів для меню
 MENU_UBUNTU=()
 MENU_ROCKET=()
@@ -94,6 +103,8 @@ MENU_ZABBIX=()
 MENU_DEBIAN=()
 MENU_PEX_MGR=()
 MENU_PEX_CONF=()
+MENU_SNAPD=()
+MENU_CORES=()
 # Функція читання файлу у змінні
 load_data() {
     local file="$1"
@@ -119,19 +130,20 @@ load_data "$TMP_ZABBIX"   MENU_ZABBIX   MAP_ZABBIX
 load_data "$TMP_DEBIAN"   MENU_DEBIAN   MAP_DEBIAN
 load_data "$TMP_PEX_MGR"  MENU_PEX_MGR  MAP_PEX_MGR
 load_data "$TMP_PEX_CONF" MENU_PEX_CONF MAP_PEX_CONF
+load_data "$TMP_SNAPD" MENU_SNAPD MAP_SNAPD
+load_data "$TMP_CORES" MENU_CORES MAP_CORES
 # Видаляємо тимчасові файли
-rm "$TMP_UBUNTU" "$TMP_ROCKET" "$TMP_ZABBIX" "$TMP_DEBIAN" "$TMP_PEX_MGR" "$TMP_PEX_CONF"
+rm "$TMP_UBUNTU" "$TMP_ROCKET" "$TMP_ZABBIX" "$TMP_DEBIAN" "$TMP_PEX_MGR" "$TMP_PEX_CONF" "$TMP_SNAPD" "$TMP_CORES"
 #Вибір програм(Меню (головне))
 while true; do
     RAW_APPS=$(whiptail --title "Менеджер завантажень" --checklist \
     "Які продукти ви хочете завантажити?" 20 56 5 \
     "RocketChat"  "Rocket.Chat Server (+ Ubuntu Base)" ON \
     "Zabbix"      "Zabbix Appliance (.ovf)" ON \
-    "Debian"      "Debian Cloud Image (.qcow2)" ON \
     "Pexip_Mgr"   "Pexip Management Node (.ova)" ON \
     "Pexip_Conf"  "Pexip Conferencing Node (.ova)" ON \
     3>&1 1>&2 2>&3)
-
+#    "Debian"      "Debian Cloud Image (.qcow2)" ON \
     if [ $? -ne 0 ]; then
         echo "Роботу завершено користувачем."
         exit 0
@@ -181,21 +193,30 @@ safe_select() {
     eval "$result_var=\"$selection\""
 }
 
-# --- ROCKET CHAT (залежить від Ubuntu) ---
+# --- ROCKET CHAT ---
 if [[ "$SELECTED_APPS_STR" == *"RocketChat"* ]]; then
-    # Автоматичний вибір останньої (першої в списку) версії Ubuntu
+    echo "Налаштування RocketChat..."
+
+    # 1. Автоматичний вибір Ubuntu Base
     if [ ${#MENU_UBUNTU[@]} -gt 0 ]; then
-        # У MENU_UBUNTU структура: [VER, "", "OFF", VER, "", "OFF"...]
-        # Тому перший елемент (індекс 0) - це найновіша версія (за умови сортування парсером)
         VER_UBUNTU="${MENU_UBUNTU[0]}"
-        echo "Автоматично обрано Ubuntu Base: $VER_UBUNTU"
+        echo "   -> Автоматично обрано Ubuntu Base: $VER_UBUNTU"
     else
         VER_UBUNTU="ERROR"
         whiptail --msgbox "Не вдалося автоматично визначити версію Ubuntu!" 8 52
-        #Придумай що робити з помилкою !!!!!!!!!!!!!!!!!!!!!!!1
     fi
 
-    # Для самого RocketChat залишаємо ручний вибір
+    # 2. Автоматичний вибір Snapd (ДОДАНО)
+    if [ ${#MENU_SNAPD[@]} -gt 0 ]; then
+        # Беремо перший елемент (найновіша версія)
+        VER_SNAPD="${MENU_SNAPD[0]}"
+        echo "   -> Автоматично обрано Snapd: $VER_SNAPD"
+    else
+        VER_SNAPD="ERROR"
+        echo "   -> [ПОМИЛКА] Не вдалося знайти версію Snapd!"
+    fi
+
+    # 3. Ручний вибір RocketChat
     safe_select "RocketChat -> Application" "Оберіть версію RocketChat:" MENU_ROCKET VER_ROCKET
 fi
 
@@ -205,9 +226,9 @@ if [[ "$SELECTED_APPS_STR" == *"Zabbix"* ]]; then
 fi
 
 # --- DEBIAN ---
-if [[ "$SELECTED_APPS_STR" == *"Debian"* ]]; then
-    safe_select "Debian Cloud" "Оберіть версію Debian (Backports):" MENU_DEBIAN VER_DEBIAN
-fi
+#if [[ "$SELECTED_APPS_STR" == *"Debian"* ]]; then
+#    safe_select "Debian Cloud" "Оберіть версію Debian (Backports):" MENU_DEBIAN VER_DEBIAN
+#fi
 
 # --- PEXIP ---
 LATEST_COMMON_VER=""
@@ -244,87 +265,136 @@ if [[ "$SELECTED_APPS_STR" == *"Pexip_Mgr"* ]] || [[ "$SELECTED_APPS_STR" == *"P
         VER_PEX_CONF="$LATEST_COMMON_VER"
     fi
 fi
-#ПІДСУМКОВИЙ ЗВІТ
-# --- RocketChat ---
-if [[ "$SELECTED_APPS_STR" == *"RocketChat"* ]]; then
-    echo -e "\n [ROCKET.CHAT FULL STACK]"
-    if [[ "$VER_UBUNTU" != "ERROR" && "$VER_ROCKET" != "ERROR" ]]; then
-        echo "   -> OS Base:  Ubuntu $VER_UBUNTU"
-        echo "      Link:     ${MAP_UBUNTU[$VER_UBUNTU]}"
-        echo "   -> App:      Rocket.Chat $VER_ROCKET"
-        echo "      Channel:  ${MAP_ROCKET[$VER_ROCKET]}" # У вашому парсері лінк - це назва каналу, або змініть логіку
-    else
-        echo "   -> [SKIPPED] Помилка отримання списків."
-    fi
-fi
-
-# --- Zabbix ---
-if [[ "$SELECTED_APPS_STR" == *"Zabbix"* ]]; then
-    echo -e "\n [ZABBIX APPLIANCE]"
-    if [[ "$VER_ZABBIX" != "ERROR" ]]; then
-        echo "   -> Version:  $VER_ZABBIX"
-        echo "      Link:     ${MAP_ZABBIX[$VER_ZABBIX]}"
-    else
-        echo "   -> [SKIPPED] Немає даних."
-    fi
-fi
-
-# --- Debian ---
-if [[ "$SELECTED_APPS_STR" == *"Debian"* ]]; then
-    echo -e "\n [DEBIAN CLOUD IMAGE]"
-    if [[ "$VER_DEBIAN" != "ERROR" ]]; then
-        echo "   -> Version:  Debian $VER_DEBIAN"
-        echo "      Link:     ${MAP_DEBIAN[$VER_DEBIAN]}"
-    else
-        echo "   -> [SKIPPED] Немає даних."
-    fi
-fi
-
-# --- Pexip Manager ---
-if [[ "$SELECTED_APPS_STR" == *"Pexip_Mgr"* ]]; then
-    echo -e "\n [PEXIP MANAGEMENT NODE]"
-    if [[ "$VER_PEX_MGR" != "ERROR" ]]; then
-        echo "   -> Version:  $VER_PEX_MGR"
-        echo "      Link:     ${MAP_PEX_MGR[$VER_PEX_MGR]}"
-    else
-        echo "   -> [SKIPPED] Немає даних."
-    fi
-fi
-
-# --- Pexip Conf ---
-if [[ "$SELECTED_APPS_STR" == *"Pexip_Conf"* ]]; then
-    echo -e "\n [PEXIP CONFERENCING NODE]"
-    if [[ "$VER_PEX_CONF" != "ERROR" ]]; then
-        echo "   -> Version:  $VER_PEX_CONF"
-        echo "      Link:     ${MAP_PEX_CONF[$VER_PEX_CONF]}"
-    else
-        echo "   -> [SKIPPED] Немає даних."
-    fi
-fi
-
 # Створюємо тимчасовий файл зі списком посилань
-cat <<EOF > ./downloads.txt
-${MAP_UBUNTU[$VER_UBUNTU]}
-${MAP_ZABBIX[$VER_ZABBIX]}
-${MAP_PEX_MGR[$VER_PEX_MGR]}
-${MAP_PEX_CONF[$VER_PEX_CONF]}
-EOF
+touch ./temp/downloads.txt
+
+if [[ "$SELECTED_APPS_STR" == *"RocketChat"* ]]; then
+  echo "${MAP_UBUNTU[$VER_UBUNTU]}" >> ./temp/downloads.txt
+  echo "${MAP_ROCKET[$VER_ROCKET]}" >> ./temp/downloads.txt
+  echo "  out=rocketchat-server.snap" >> ./temp/downloads.txt
+  echo "${MAP_SNAPD[$VER_SNAPD]}" >> ./temp/downloads.txt
+  echo "  out=snapd.snap" >> ./temp/downloads.txt
+fi
+
+if [[ "$SELECTED_APPS_STR" == *"Zabbix"* ]]; then
+  echo "${MAP_ZABBIX[$VER_ZABBIX]}" >> ./temp/downloads.txt
+fi
+
+if [[ "$SELECTED_APPS_STR" == *"Pexip_Mgr"* ]]; then
+  echo "${MAP_PEX_MGR[$VER_PEX_MGR]}" >> ./temp/downloads.txt
+fi
+
+if [[ "$SELECTED_APPS_STR" == *"Pexip_Conf"* ]]; then
+  echo "${MAP_PEX_CONF[$VER_PEX_CONF]}" >> ./temp/downloads.txt
+fi
+
 
 # Запускаємо aria2c для роботи з цим файлом
 # -j 4  означає завантажувати 4 файли одночасно
 # -x 16 кількість з'єднань на один файл
 # Якщо вона повертає помилку (не 0), виконується блок після ||
-aria2c -d "$CLOUD_IMAGES_DIR" -i ./downloads.txt -j 4 -x 16 -c || {
+aria2c -d "$TEMP_DIR" -i ./temp/downloads.txt -j 4 -x 16 -c || {
     echo "Критична помилка завантаження! Активую скрипт видалення ПЗ..."
-    rm ./downloads.txt
+
 #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     exit 1  # Завершуємо роботу поточного скрипта з кодом помилки
 }
 
 # Якщо завантаження пройшло успішно:
 echo "Всі файли успішно завантажені!"
-rm ./downloads.txt
 
+#Попереносити ї по своїх місцях!!!!!!!!!!!!!!!!!!!!!!!!!!!
+if [[ -f "$TEMP_DIR/snapd.snap" ]]; then
+    mv -f "$TEMP_DIR/snapd.snap" "$SOFTWARE_DIR/"
+    echo " -> snapd.snap переміщено в $SOFTWARE_DIR"
+fi
+
+# Переміщення RocketChat
+if [[ -f "$TEMP_DIR/rocketchat-server.snap" ]]; then
+    mv -f "$TEMP_DIR/rocketchat-server.snap" "$SOFTWARE_DIR/"
+    echo " -> rocketchat-server.snap переміщено в $SOFTWARE_DIR"
+fi
+
+# --- 2. Переміщення хмарних образів (Cloud Images) ---
+
+# Ubuntu Base
+# Шукаємо файл за маскою, бо ми могли назвати його ubuntu-20.04.ova або ubuntu-22.04.ova
+# Але в aria2 ми прописали out=ubuntu-base.tar.gz (або .ova, перевірте як у вас в cat <<EOF)
+# Ubuntu
+# 2>/dev/null ховає помилку "No such file", якщо файлів немає
+if mv "$TEMP_DIR"/ubuntu*.ova "$CLOUD_IMAGES_DIR/" 2>/dev/null; then
+    echo " -> Ubuntu Base переміщено в $CLOUD_IMAGES_DIR"
+fi
+
+# Zabbix
+if mv "$TEMP_DIR"/zabbix*.tar.gz "$CLOUD_IMAGES_DIR/" 2>/dev/null; then
+    echo " -> Zabbix Appliance переміщено в $CLOUD_IMAGES_DIR"
+fi
+
+# Pexip Manager
+if mv "$TEMP_DIR"/Pexip*pxMgr*.ova "$CLOUD_IMAGES_DIR/" 2>/dev/null; then
+    echo " -> Pexip Manager переміщено в $CLOUD_IMAGES_DIR"
+fi
+
+# Pexip Conference
+if mv "$TEMP_DIR"/Pexip*ConfNode*.ova "$CLOUD_IMAGES_DIR/" 2>/dev/null; then
+    echo " -> Pexip ConfNode переміщено в $CLOUD_IMAGES_DIR"
+fi
+
+
+if [[ "$SELECTED_APPS_STR" == *"RocketChat"* ]]; then
+  SNAPD_FILE="$SOFTWARE_DIR/rocketchat-server.snap"
+
+  # 2. Читаємо meta/snap.yaml прямо з архіву
+  # snapd часто не має параметра "base", бо він сам є базовим інструментом.
+  # Тому результат може бути порожнім.
+  SNAPD_BASE=$(unsquashfs -cat "$SNAPD_FILE" meta/snap.yaml | grep "base:" | awk '{print $2}')
+
+  if [[ -n "$SNAPD_BASE" ]]; then
+    echo "Виявлено залежність від ядра: $SNAPD_BASE"
+
+    # Отримуємо URL з масиву MAP_CORES за ключем (наприклад, core22)
+    CORE_URL="${MAP_CORES[$SNAPD_BASE]}"
+
+    if [[ -n "$CORE_URL" ]]; then
+        echo "Знайдено посилання для $SNAPD_BASE. Додавання в чергу завантаження..."
+
+     # Створюємо файл списку завантаження спеціально для ядра
+cat <<EOF > ./temp/downloads.txt
+$CORE_URL
+  out=${SNAPD_BASE}.snap
+EOF
+
+      # Завантажуємо ядро в ту ж тимчасову папку
+      aria2c -d "$TEMP_DIR" -i ./temp/downloads.txt -j 4 -x 16 -c || {
+        echo "Критична помилка завантаження ядра $SNAPD_BASE!"
+        # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+        exit 1
+      }
+
+        # Прибираємо тимчасовий файл списку
+        echo "Ядро $SNAPD_BASE успішно завантажено в $TEMP_DIR"
+    else
+        # Якщо в MAP_CORES немає такого ключа (наприклад, core16, якого ми не парсили)
+        echo "УВАГА: Посилання для '$SNAPD_BASE' відсутнє в отриманому списку версій!"
+        echo "Перевірте, чи ваш парсер cores підтримує цю версію."
+        #!!!!!!!!!!!!!!!!!!!!!!
+    fi
+  else
+    echo "Інформація: Параметр 'base' у файлі $SNAPD_FILE відсутній або порожній."
+    #!!!!!!!!!!!!!!!!!!!!!!!!!!
+  fi
+
+  #перенести все по місяцям !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+  # Переміщення ядра (Core), якщо воно було завантажено
+  # $SNAPD_BASE ми отримали раніше (наприклад, core22)
+  if [[ -n "$SNAPD_BASE" && -f "$TEMP_DIR/${SNAPD_BASE}.snap" ]]; then
+    mv -f "$TEMP_DIR/${SNAPD_BASE}.snap" "$SOFTWARE_DIR/"
+    echo " -> ${SNAPD_BASE}.snap переміщено в $SOFTWARE_DIR"
+  fi
+fi
+
+rm ./temp/downloads.txt
 #Дозволяємо запуск інсталятора
 chmod +x ./bin/deploy.sh
 #Птитаємо чи запускати встановлення
